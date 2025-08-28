@@ -1,0 +1,262 @@
+/****************************************************************
+ * Study Planner Backend - Google Apps Script
+ *
+ * This script acts as a serverless backend for the Study Planner
+ * application, using Google Sheets as a database.
+ ****************************************************************/
+
+// --- GLOBAL CONFIGURATION ---
+const SHEET_ID = "1pCRPafoTrc0CXaGrQZgIBMFC8Qh3b01cUKutdZnfSVk"; // <<--- replace with your Google Sheet ID
+const PROFILE_SHEET_NAME = 'Profile';
+const SUBJECTS_SHEET_NAME = 'Subjects';
+const SUBTOPICS_SHEET_NAME = 'SubTopics';
+const EXAMS_SHEET_NAME = 'Exams';
+
+// --- HELPER FUNCTIONS ---
+
+/**
+ * Ensures a sheet with the specified name and headers exists.
+ * If not, it creates the sheet and sets up the headers.
+ * @param {GoogleAppsScript.Spreadsheet.Spreadsheet} ss The spreadsheet.
+ * @param {string} sheetName The name of the sheet to check/create.
+ * @param {string[]} headers An array of header titles for the first row.
+ */
+function setupSheet(ss, sheetName, headers) {
+  let sheet = ss.getSheetByName(sheetName);
+  if (!sheet) {
+    sheet = ss.insertSheet(sheetName);
+    sheet.appendRow(headers);
+    sheet.setFrozenRows(1);
+    sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
+  }
+}
+
+/**
+ * Converts a 2D array from a Sheet into an array of objects.
+ * @param {any[][]} data The 2D array from sheet.getRange().getValues().
+ * @param {string[]} headers The header row.
+ * @returns {Object[]} An array of objects.
+ */
+function sheetDataToObjects(data, headers) {
+  return data.map(row => {
+    const obj = {};
+    headers.forEach((header, index) => {
+      if (row[index] === true || row[index] === 'true') {
+        obj[header] = true;
+      } else if (row[index] === false || row[index] === 'false') {
+        obj[header] = false;
+      } else {
+        obj[header] = row[index];
+      }
+    });
+    return obj;
+  });
+}
+
+/**
+ * Creates a standard JSON response for the web app.
+ * @param {Object} data The data to be sent.
+ * @returns {GoogleAppsScript.Content.TextOutput} The JSON response object.
+ */
+function createJsonResponse(data) {
+  return ContentService.createTextOutput(JSON.stringify(data))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+// --- MAIN API ENDPOINTS ---
+
+/**
+ * Handles GET requests. Mainly for setup/health check.
+ */
+function doGet(e) {
+  const ss = SpreadsheetApp.openById(SHEET_ID);
+  setupSheet(ss, PROFILE_SHEET_NAME, ['email', 'name']);
+  setupSheet(ss, SUBJECTS_SHEET_NAME, ['id', 'email', 'name', 'description', 'isBrokenDown']);
+  setupSheet(ss, SUBTOPICS_SHEET_NAME, ['subjectId', 'topic', 'difficulty', 'studyHours', 'isCompleted']);
+  setupSheet(ss, EXAMS_SHEET_NAME, ['id', 'email', 'subjectId', 'date']);
+  return createJsonResponse({ status: 'success', message: 'Backend is ready. Sheets are initialized.' });
+}
+
+/**
+ * Handles POST requests. Main entry point for actions.
+ */
+function doPost(e) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+
+  try {
+    const request = JSON.parse(e.postData.contents);
+    const { action, payload } = request;
+
+    const ss = SpreadsheetApp.openById(SHEET_ID);
+
+    setupSheet(ss, PROFILE_SHEET_NAME, ['email', 'name']);
+    setupSheet(ss, SUBJECTS_SHEET_NAME, ['id', 'email', 'name', 'description', 'isBrokenDown']);
+    setupSheet(ss, SUBTOPICS_SHEET_NAME, ['subjectId', 'topic', 'difficulty', 'studyHours', 'isCompleted']);
+    setupSheet(ss, EXAMS_SHEET_NAME, ['id', 'email', 'subjectId', 'date']);
+
+    switch (action) {
+      case 'LOAD_OR_CREATE_USER':
+        return handleLoadOrCreateUser(ss, payload);
+      case 'ADD_SUBJECT':
+        return handleAddSubject(ss, payload);
+      case 'DELETE_SUBJECT':
+        return handleDeleteSubject(ss, payload);
+      case 'SAVE_SUBTOPICS':
+        return handleSaveSubtopics(ss, payload);
+      case 'TOGGLE_TOPIC_COMPLETION':
+        return handleToggleTopicCompletion(ss, payload);
+      case 'ADD_EXAM':
+        return handleAddExam(ss, payload);
+      case 'DELETE_EXAM':
+        return handleDeleteExam(ss, payload);
+      default:
+        return createJsonResponse({ status: 'error', message: 'Invalid action' });
+    }
+  } catch (error) {
+    Logger.log(error);
+    return createJsonResponse({ status: 'error', message: error.toString(), stack: error.stack });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// --- ACTION HANDLERS ---
+
+function handleLoadOrCreateUser(ss, { email, name }) {
+  const profileSheet = ss.getSheetByName(PROFILE_SHEET_NAME);
+  const profiles = profileSheet.getDataRange().getValues();
+  const profileHeaders = profiles.shift();
+
+  let userProfile = sheetDataToObjects(profiles, profileHeaders).find(p => p.email === email);
+
+  if (!userProfile) {
+    profileSheet.appendRow([email, name]);
+    userProfile = { email, name };
+  } else if (userProfile.name !== name && name) {
+    const rowIndex = profiles.findIndex(p => p[0] === email) + 2;
+    profileSheet.getRange(rowIndex, 2).setValue(name);
+    userProfile.name = name;
+  }
+
+  const subjectsSheet = ss.getSheetByName(SUBJECTS_SHEET_NAME);
+  const subjectsData = subjectsSheet.getDataRange().getValues();
+  const subjectsHeaders = subjectsData.shift();
+  const userSubjects = sheetDataToObjects(subjectsData, subjectsHeaders).filter(s => s.email === email);
+
+  const subtopicsSheet = ss.getSheetByName(SUBTOPICS_SHEET_NAME);
+  const subtopicsData = subtopicsSheet.getDataRange().getValues();
+  const subtopicsHeaders = subtopicsData.shift();
+  const allSubtopics = sheetDataToObjects(subtopicsData, subtopicsHeaders);
+
+  userSubjects.forEach(subject => {
+    subject.subTopics = allSubtopics.filter(st => st.subjectId === subject.id);
+  });
+
+  const examsSheet = ss.getSheetByName(EXAMS_SHEET_NAME);
+  const examsData = examsSheet.getDataRange().getValues();
+  const examsHeaders = examsData.shift();
+  const userExams = sheetDataToObjects(examsData, examsHeaders).filter(e => e.email === email);
+
+  userExams.forEach(exam => {
+    if (exam.date instanceof Date) {
+      exam.date = exam.date.toISOString().split('T')[0];
+    }
+  });
+
+  return createJsonResponse({
+    status: 'success',
+    data: {
+      profile: userProfile,
+      subjects: userSubjects,
+      exams: userExams
+    }
+  });
+}
+
+function handleAddSubject(ss, { email, subject }) {
+  const sheet = ss.getSheetByName(SUBJECTS_SHEET_NAME);
+  sheet.appendRow([subject.id, email, subject.name, subject.description, subject.isBrokenDown]);
+  return createJsonResponse({ status: 'success', data: subject });
+}
+
+function handleDeleteSubject(ss, { subjectId }) {
+  const subjectsSheet = ss.getSheetByName(SUBJECTS_SHEET_NAME);
+  const subjectData = subjectsSheet.getDataRange().getValues();
+  const subjectRowIndex = subjectData.findIndex(row => row[0] === subjectId);
+  if (subjectRowIndex !== -1) {
+    subjectsSheet.deleteRow(subjectRowIndex + 1);
+  }
+
+  const subtopicsSheet = ss.getSheetByName(SUBTOPICS_SHEET_NAME);
+  const subtopicData = subtopicsSheet.getDataRange().getValues();
+  const subtopicRowsToDelete = subtopicData.reduce((acc, row, index) => {
+    if (row[0] === subjectId) acc.push(index + 1);
+    return acc;
+  }, []);
+  subtopicRowsToDelete.reverse().forEach(rowIndex => subtopicsSheet.deleteRow(rowIndex));
+
+  const examsSheet = ss.getSheetByName(EXAMS_SHEET_NAME);
+  const examData = examsSheet.getDataRange().getValues();
+  const examRowsToDelete = examData.reduce((acc, row, index) => {
+    if (row[2] === subjectId) acc.push(index + 1);
+    return acc;
+  }, []);
+  examRowsToDelete.reverse().forEach(rowIndex => examsSheet.deleteRow(rowIndex));
+
+  return createJsonResponse({ status: 'success', message: `Deleted subject ${subjectId} and all related data.` });
+}
+
+function handleSaveSubtopics(ss, { subjectId, subTopics }) {
+  const subtopicsSheet = ss.getSheetByName(SUBTOPICS_SHEET_NAME);
+  subTopics.forEach(topic => {
+    subtopicsSheet.appendRow([subjectId, topic.topic, topic.difficulty, topic.studyHours, topic.isCompleted]);
+  });
+
+  const subjectsSheet = ss.getSheetByName(SUBJECTS_SHEET_NAME);
+  const subjectData = subjectsSheet.getDataRange().getValues();
+  const rowIndex = subjectData.findIndex(row => row[0] === subjectId);
+  if (rowIndex !== -1) {
+    subjectsSheet.getRange(rowIndex + 1, 5).setValue(true);
+  }
+
+  return createJsonResponse({ status: 'success', data: subTopics });
+}
+
+function handleToggleTopicCompletion(ss, { subjectId, topicName, isCompleted }) {
+  const sheet = ss.getSheetByName(SUBTOPICS_SHEET_NAME);
+  const data = sheet.getDataRange().getValues();
+  const rowIndex = data.findIndex(row => row[0] === subjectId && row[1] === topicName);
+
+  if (rowIndex !== -1) {
+    sheet.getRange(rowIndex + 1, 5).setValue(isCompleted);
+    return createJsonResponse({ status: 'success' });
+  }
+  return createJsonResponse({ status: 'error', message: 'Topic not found.' });
+}
+
+function handleAddExam(ss, { email, exam }) {
+  const sheet = ss.getSheetByName(EXAMS_SHEET_NAME);
+  sheet.appendRow([exam.id, email, exam.subjectId, exam.date]);
+  return createJsonResponse({ status: 'success', data: exam });
+}
+
+function handleDeleteExam(ss, { examId }) {
+  const sheet = ss.getSheetByName(EXAMS_SHEET_NAME);
+  const data = sheet.getDataRange().getValues();
+  const rowIndex = data.findIndex(row => row[0] === examId);
+  if (rowIndex !== -1) {
+    sheet.deleteRow(rowIndex + 1);
+    return createJsonResponse({ status: 'success' });
+  }
+  return createJsonResponse({ status: 'error', message: 'Exam not found.' });
+}
+function testConnection() {
+  try {
+    const ss = SpreadsheetApp.openById(SHEET_ID);
+    Logger.log("Opened spreadsheet: " + ss.getName());
+  } catch (err) {
+    Logger.log("❌ Error: " + err);
+  }
+}
+

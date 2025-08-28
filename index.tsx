@@ -54,11 +54,19 @@ const apiCall = async (action: string, payload: object) => {
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
-        const result = await response.json();
+        let result;
+        try {
+            result = await response.json();
+        } catch (err) {
+            throw new Error('Could not parse server response as JSON.');
+        }
+        if (!result || typeof result !== 'object') {
+            throw new Error('Invalid response from server.');
+        }
         if (result.status !== 'success') {
             throw new Error(result.message || 'An unknown API error occurred.');
         }
-        return result.data;
+        return result.data ?? {};
     } catch (error) {
         console.error(`API call failed for action "${action}":`, error);
         throw error; // Re-throw to be caught by the calling function
@@ -180,7 +188,10 @@ const App = () => {
     const [isLoggedIn, setIsLoggedIn] = useState(false);
     const [isLoadingAuth, setIsLoadingAuth] = useState(false);
     const [authMessage, setAuthMessage] = useState('');
+    const [subjectMessage, setSubjectMessage] = useState('');
 
+    const profileNameRef = useRef<HTMLInputElement>(null);
+    const profileEmailRef = useRef<HTMLInputElement>(null);
     const handleProfileChange = (e: ChangeEvent<HTMLInputElement>) => {
         setProfile(p => ({ ...p, [e.target.name]: e.target.value }));
     };
@@ -214,26 +225,35 @@ const App = () => {
         setAuthMessage("You have been logged out. Enter email to reconnect.");
     };
 
+    const nameRef = useRef<HTMLInputElement>(null);
+    const descRef = useRef<HTMLInputElement>(null);
     const addSubject = async (e: FormEvent<HTMLFormElement>) => {
         e.preventDefault();
         const formData = new FormData(e.currentTarget);
         const name = formData.get('name') as string;
         const description = formData.get('description') as string;
         if (!name || !description) return;
-        
+
         const newSubject: Omit<Subject, 'isLoading' | 'error' | 'subTopics'> = {
-            id: Date.now().toString(), 
-            name, 
+            id: Date.now().toString(),
+            name,
             description,
             isBrokenDown: false
         };
 
         try {
-            await apiCall('ADD_SUBJECT', { email: profile.email, subject: newSubject });
+            const result = await apiCall('ADD_SUBJECT', { email: profile.email, subject: newSubject });
             setSubjects(prev => [...prev, { ...newSubject, subTopics: [], isLoading: false }]);
-            e.currentTarget.reset();
-        } catch (error) {
-            alert('Failed to add subject. Please try again.');
+            if (e.currentTarget && typeof e.currentTarget.reset === 'function') {
+                e.currentTarget.reset();
+            }
+            setSubjectMessage('Subject added successfully!');
+            setTimeout(() => setSubjectMessage(''), 2000);
+            if (nameRef.current) nameRef.current.focus();
+        } catch (error: any) {
+            console.error('Add subject error:', error);
+            setSubjectMessage('Failed to add subject. ' + (error?.message || 'Please try again.'));
+            setTimeout(() => setSubjectMessage(''), 3000);
         }
     };
     
@@ -343,11 +363,45 @@ const App = () => {
                     <form className="profile-form" onSubmit={(e) => e.preventDefault()}>
                         <div className="form-group">
                             <label htmlFor="name">{'>'} Name_</label>
-                            <input type="text" id="name" name="name" value={profile.name} onChange={handleProfileChange} placeholder="Enter your callsign" disabled={isLoggedIn} />
+                            <input
+                                type="text"
+                                id="name"
+                                name="name"
+                                value={profile.name}
+                                onChange={handleProfileChange}
+                                placeholder="Enter your callsign"
+                                disabled={isLoggedIn}
+                                ref={profileNameRef}
+                                onKeyDown={e => {
+                                    if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        if (profileEmailRef.current) profileEmailRef.current.focus();
+                                    }
+                                }}
+                            />
                         </div>
                         <div className="form-group">
                             <label htmlFor="email">{'>'} Email_</label>
-                            <input type="email" id="email" name="email" value={profile.email} onChange={handleProfileChange} placeholder="Enter your secure address" disabled={isLoggedIn} />
+                            <input
+                                type="email"
+                                id="email"
+                                name="email"
+                                value={profile.email}
+                                onChange={handleProfileChange}
+                                placeholder="Enter your secure address"
+                                disabled={isLoggedIn}
+                                ref={profileEmailRef}
+                                onKeyDown={e => {
+                                    if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        const form = e.currentTarget.form;
+                                        if (form) {
+                                            const btn = form.querySelector('button[type="button"]') as HTMLButtonElement;
+                                            if (btn) btn.focus();
+                                        }
+                                    }
+                                }}
+                            />
                         </div>
                         <div className="form-actions">
                              {!isLoggedIn ? (
@@ -370,13 +424,46 @@ const App = () => {
                             <form onSubmit={addSubject}>
                                 <div className="form-group">
                                     <label htmlFor="subject-name">{'>'} Subject Name_</label>
-                                    <input type="text" id="subject-name" name="name" placeholder="e.g. Quantum Computing" required />
+                                    <input
+                                        type="text"
+                                        id="subject-name"
+                                        name="name"
+                                        placeholder="e.g. Quantum Computing"
+                                        required
+                                        ref={nameRef}
+                                        onKeyDown={e => {
+                                            if (e.key === 'Enter') {
+                                                e.preventDefault();
+                                                if (descRef.current) descRef.current.focus();
+                                            }
+                                        }}
+                                    />
                                 </div>
                                 <div className="form-group">
                                     <label htmlFor="subject-desc">{'>'} Description_</label>
-                                    <input type="text" id="subject-desc" name="description" placeholder="e.g. Please add all topics in a detailed manner" required />
+                                    <input
+                                        type="text"
+                                        id="subject-desc"
+                                        name="description"
+                                        placeholder="e.g. Please add all topics in a detailed manner"
+                                        required
+                                        ref={descRef}
+                                        onKeyDown={e => {
+                                            if (e.key === 'Enter') {
+                                                e.preventDefault();
+                                                const form = e.currentTarget.form;
+                                                if (form) {
+                                                    const btn = form.querySelector('button[type="submit"]') as HTMLButtonElement;
+                                                    if (btn) btn.focus();
+                                                }
+                                            }
+                                        }}
+                                    />
                                 </div>
                                 <button type="submit">{'>'} Add Subject</button>
+                                {subjectMessage && (
+                                    <div style={{textAlign:'center',marginTop:'1em',color:subjectMessage.includes('success')?'#00ff41':'#ff4141',fontWeight:700}}>{subjectMessage}</div>
+                                )}
                             </form>
                         </Card>
 
