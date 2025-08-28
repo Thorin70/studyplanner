@@ -374,7 +374,7 @@ const App = () => {
                                 </div>
                                 <div className="form-group">
                                     <label htmlFor="subject-desc">{'>'} Description_</label>
-                                    <input type="text" id="subject-desc" name="description" placeholder="e.g. Qubits and Entanglement" required />
+                                    <input type="text" id="subject-desc" name="description" placeholder="e.g. Please add all topics in a detailed manner" required />
                                 </div>
                                 <button type="submit">{'>'} Add Subject</button>
                             </form>
