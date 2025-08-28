@@ -1,0 +1,5 @@
+{
+  "description": "A Matrix-themed study planner application to help students organize subjects, study sessions, and exam dates. All data is saved locally in the browser.",
+  "requestFramePermissions": [],
+  "name": "App"
+}
